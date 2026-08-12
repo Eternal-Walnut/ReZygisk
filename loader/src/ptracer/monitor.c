@@ -225,207 +225,6 @@ void rezygiskd_listener_callback() {
 
         break;
       }
-      case DAEMON64  TRACING,
-  STOPPING,
-  STOPPED,
-  EXITING
-};
-
-enum ptracer_tracing_state tracing_state = TRACING;
-
-struct rezygiskd_status {
-  bool supported;
-  bool zygote_injected;
-  bool daemon_running;
-  pid_t daemon_pid;
-  char *daemon_info;
-  char *daemon_error_info;
-};
-
-struct rezygiskd_status status64 = {
-  .supported = false,
-  .zygote_injected = false,
-  .daemon_running = false,
-  .daemon_pid = -1,
-  .daemon_info = NULL,
-  .daemon_error_info = NULL
-};
-struct rezygiskd_status status32 = {
-  .supported = false,
-  .zygote_injected = false,
-  .daemon_running = false,
-  .daemon_pid = -1,
-  .daemon_info = NULL,
-  .daemon_error_info = NULL
-};
-
-int monitor_epoll_fd;
-bool monitor_events_running = true;
-typedef void (*monitor_event_callback_t)();
-
-bool monitor_events_init() {
-  monitor_epoll_fd = epoll_create(1);
-  if (monitor_epoll_fd == -1) {
-    PLOGE("epoll_create");
-
-    return false;
-  }
-
-  return true;
-}
-
-bool monitor_events_register_event(monitor_event_callback_t event_cb, int fd, uint32_t events) {
-  struct epoll_event ev = {
-    .data.ptr = (void *)event_cb,
-    .events = events
-  };
-
-  if (epoll_ctl(monitor_epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
-    PLOGE("epoll_ctl");
-
-    return false;
-  }
-
-  return true;
-}
-
-bool monitor_events_unregister_event(int fd) {
-  if (epoll_ctl(monitor_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == -1) {
-    PLOGE("epoll_ctl");
-
-    return false;
-  }
-
-  return true;
-}
-
-void monitor_events_stop() {
-  monitor_events_running = false;
-}
-
-void monitor_events_loop() {
-  struct epoll_event events[2];
-  while (monitor_events_running) {
-    int nfds = epoll_wait(monitor_epoll_fd, events, 2, -1);
-    if (nfds == -1 && errno != EINTR) {
-      PLOGE("epoll_wait");
-
-      monitor_events_running = false;
-
-      break;
-    }
-
-    for (int i = 0; i < nfds; i++) {
-      if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-        LOGE("Failed event on fd %d: %s", ((struct epoll_event *)&events[i])->data.fd, strerror(errno));
-
-        monitor_events_running = false;
-
-        break;
-      }
-
-      ((monitor_event_callback_t)events[i].data.ptr)();
-
-      if (!monitor_events_running) break;
-    }
-  }
-
-  if (monitor_epoll_fd >= 0) close(monitor_epoll_fd);
-  monitor_epoll_fd = -1;
-}
-
-int monitor_sock_fd;
-
-bool rezygiskd_listener_init() {
-  monitor_sock_fd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-  if (monitor_sock_fd == -1) {
-    PLOGE("socket create");
-
-    return false;
-  }
-
-  struct sockaddr_un addr = {
-    .sun_family = AF_UNIX,
-    .sun_path = { 0 }
-  };
-
-  size_t sun_path_len = sprintf(addr.sun_path, "%s/%s", rezygiskd_get_path(), SOCKET_NAME);
-
-  socklen_t socklen = sizeof(sa_family_t) + sun_path_len;
-  if (bind(monitor_sock_fd, (struct sockaddr *)&addr, socklen) == -1) {
-    PLOGE("bind socket");
-
-    return false;
-  }
-
-  return true;
-}
-
-void rezygiskd_listener_callback() {
-  while (1) {
-    uint8_t cmd;
-    ssize_t nread = TEMP_FAILURE_RETRY(read(monitor_sock_fd, &cmd, sizeof(cmd)));
-    if (nread == -1) {
-      if (errno == EINTR || errno == EWOULDBLOCK) break;
-
-      PLOGE("read socket");
-
-      continue;
-    }
-
-    switch (cmd) {
-      case START: {
-        if (tracing_state == STOPPING) {
-          LOGI("Continue tracing init");
-
-          tracing_state = TRACING;
-        } else if (tracing_state == STOPPED) {
-          LOGI("Start tracing init");
-
-          ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
-
-          tracing_state = TRACING;
-        }
-
-        update_status(NULL);
-
-        break;
-      }
-      case STOP: {
-        if (tracing_state == TRACING) {
-          LOGI("Stop tracing requested");
-
-          tracing_state = STOPPING;
-          monitor_stop_reason = "user requested";
-
-          ptrace(PTRACE_INTERRUPT, 1, 0, 0);
-          update_status(NULL);
-        }
-
-        break;
-      }
-      case EXIT: {
-        LOGI("Prepare for exit ...");
-
-        tracing_state = EXITING;
-        monitor_stop_reason = "user requested";
-
-        update_status(NULL);
-        monitor_events_stop();
-
-        break;
-      }
-      case ZYGOTE64_INJECTED:
-      case ZYGOTE32_INJECTED: {
-        LOGI("Received Zygote%s injected command", cmd == ZYGOTE64_INJECTED ? "64" : "32");
-
-        struct rezygiskd_status *status = cmd == ZYGOTE64_INJECTED ? &status64 : &status32;
-        status->zygote_injected = true;
-
-        update_status(NULL);
-
-        break;
-      }
       case DAEMON64_SET_INFO:
       case DAEMON32_SET_INFO: {
         LOGD("Received ReZygiskd%s info", cmd == DAEMON64_SET_INFO ? "64" : "32");
@@ -785,13 +584,13 @@ void sigchld_listener_callback() {
     }
 
     if (s != sizeof(sigchld_fdsi)) {
-      LOGW("read %zu != %zu", s, sizeof(sigchld_fdsi));
+      LOGE("read %zu != %zu", s, sizeof(sigchld_fdsi));
 
       continue;
     }
 
     if (sigchld_fdsi.ssi_signo != SIGCHLD) {
-      LOGW("no sigchld received");
+      LOGE("No sigchld received");
 
       continue;
     }
@@ -809,13 +608,13 @@ void sigchld_listener_callback() {
 
           ptrace(PTRACE_GETEVENTMSG, pid, 0, &child_pid);
 
-          LOGV("forked %ld", child_pid);
+          LOGV("Forked %ld", child_pid);
         } else if (STOPPED_WITH(SIGTRAP, PTRACE_EVENT_STOP) && tracing_state == STOPPING) {
           if (ptrace(PTRACE_DETACH, 1, 0, 0) == -1) PLOGE("failed to detach init");
 
           tracing_state = STOPPED;
 
-          LOGI("stop tracing init");
+          LOGI("Stopped tracing init");
 
           continue;
         }
@@ -823,13 +622,13 @@ void sigchld_listener_callback() {
         if (WIFSTOPPED(sigchld_status)) {
           if (WPTEVENT(sigchld_status) == 0) {
             if (WSTOPSIG(sigchld_status) != SIGSTOP && WSTOPSIG(sigchld_status) != SIGTSTP && WSTOPSIG(sigchld_status) != SIGTTIN && WSTOPSIG(sigchld_status) != SIGTTOU) {
-              LOGW("inject signal sent to init: %s %d", sigabbrev_np(WSTOPSIG(sigchld_status)), WSTOPSIG(sigchld_status));
+              LOGW("Injecting signal sent to init: %s %d", sigabbrev_np(WSTOPSIG(sigchld_status)), WSTOPSIG(sigchld_status));
 
               ptrace(PTRACE_CONT, pid, 0, WSTOPSIG(sigchld_status));
 
               continue;
             } else {
-              LOGW("suppress stopping signal sent to init: %s %d", sigabbrev_np(WSTOPSIG(sigchld_status)), WSTOPSIG(sigchld_status));
+              LOGW("Suppressing stop signal sent to init: %s %d", sigabbrev_np(WSTOPSIG(sigchld_status)), WSTOPSIG(sigchld_status));
             }
           }
 
@@ -852,7 +651,7 @@ void sigchld_listener_callback() {
       }
 
       if (state == 0) {
-        LOGV("new process %d attached", pid);
+        LOGV("New process %d attached", pid);
 
         for (size_t i = 0; i < sigchld_process_count; i++) {
           if (sigchld_process[i] != 0) continue;
@@ -895,7 +694,7 @@ void sigchld_listener_callback() {
 
           do {
             if (tracing_state != TRACING) {
-              LOGW("stop injecting %d because not tracing", pid);
+              LOGD("Stopped injecting %d because status is not set to tracing", pid);
 
               break;
             }
@@ -905,30 +704,20 @@ void sigchld_listener_callback() {
             PRE_INJECT_TANGO
 
             if (tracer != NULL) {
-              LOGI("handoff tracer: pid=%d program=%s tracer=%s tango=%s", pid, program, tracer, is_tango ? "yes" : "no");
+              LOGD("Stopping %d (program: %s, tracer: %s, tango: %s)", pid, program, tracer, is_tango ? "yes" : "no");
 
-              if (is_tango) {
-                /* INFO: Stopping tango during init causes an unrecoverable SIGSEGV on resume. */
-                /* TODO: Can this be improved? Can we make an injection without time being a factor? */
-                LOGD("tango deferred: detaching %d without stop", pid);
+              kill(pid, SIGSTOP);
+              ptrace(PTRACE_CONT, pid, 0, 0);
+              waitpid(pid, &sigchld_status, __WALL);
 
-                ptrace(PTRACE_DETACH, pid, 0, 0);
-              } else {
-                LOGD("stopping %d", pid);
+              if (!STOPPED_WITH(SIGSTOP, 0)) {
+                LOGE("Failed to stop process %d", pid);
 
-                kill(pid, SIGSTOP);
-                ptrace(PTRACE_CONT, pid, 0, 0);
-                waitpid(pid, &sigchld_status, __WALL);
-
-                if (!STOPPED_WITH(SIGSTOP, 0)) {
-                  LOGW("handoff: pid %d did not stop as expected", pid);
-
-                  break;
-                }
-
-                LOGD("detaching %d", pid);
-                ptrace(PTRACE_DETACH, pid, 0, SIGSTOP);
+                break;
               }
+
+              LOGD("Detaching %d", pid);
+              ptrace(PTRACE_DETACH, pid, 0, SIGSTOP);
 
               {
                 sigchld_status = 0;
@@ -955,12 +744,12 @@ void sigchld_listener_callback() {
                     }
                   }
 
-                  PLOGE("failed to exec, kill");
+                  PLOGE("exec");
 
                   kill(pid, SIGKILL);
                   exit(1);
                 } else if (p == -1) {
-                  PLOGE("failed to fork, kill");
+                  PLOGE("fork");
 
                   kill(pid, SIGKILL);
                 }
