@@ -117,6 +117,171 @@ bool set_regs(int pid, struct user_regs_struct *regs) {
   return true;
 }
 
+/* INFO: strrchr but without modifying the string */
+const char *position_after(const char *str, const char needle) {
+  const char *positioned = strrchr(str, needle);
+  return positioned ? positioned + 1 : str;
+}
+
+void *find_module_return_addr(struct maps_info *map, const char *suffix) {
+  for (size_t i = 0; i < map->length; i++) {
+    const struct map_entry  *m = &map->maps[i];
+    const char *file_name;
+
+    if (!m->path || (m->perms & PROT_EXEC)) continue;
+
+    file_name = position_after(m->path, '/');
+    if (strlen(file_name) < strlen(suffix) || strncmp(file_name, suffix, strlen(suffix)) != 0) continue;
+
+    return (void *)m->start;
+  }
+
+  return NULL;
+}
+
+void *find_module_base(struct maps_info *map, const char *file) {
+  for (size_t i = 0; i < map->length; i++) {
+    const struct map_entry  *m = &map->maps[i];
+    if (!m->path || m->offset != 0) continue;
+    if (strcmp(m->path, file) != 0) continue;
+
+    return (void *)m->start;
+  }
+
+  return NULL;
+}
+
+void *find_func_addr(struct maps_info *local_info, struct maps_info *remote_info, const char *module, const char *func) {
+  uint8_t *local_base = (uint8_t *)find_module_base(local_info, module);
+  if (local_base == NULL) {
+    LOGD("failed to find local base for module %s", module);
+
+    return NULL;
+  }
+
+  uint8_t *remote_base = (uint8_t *)find_module_base(remote_info, module);
+  if (remote_base == NULL) {
+    LOGD("failed to find remote base for module %s", module);
+
+    return NULL;
+  }
+
+  LOGD("found local base %p remote base %p", local_base, remote_base);
+
+  ElfImg *mod = ElfImg_create(module, local_base);
+  if (mod == NULL) {
+    LOGW("failed to create elf img %s", module);
+
+    return NULL;
+  }
+
+  uint8_t *sym = (uint8_t *)getSymbAddress(mod, func);
+  if (sym == NULL) {
+    LOGD("failed to find symbol %s in %s", func, module);
+
+    ElfImg_destroy(mod);
+
+    return NULL;
+  }
+
+  LOGD("found symbol %s in %s: %p", func, module, sym);
+
+  uintptr_t addr = (uintptr_t)(sym - local_base) + (uintptr_t)remote_base;
+  LOGD("addr %p", (void *)addr);
+
+  ElfImg_destroy(mod);
+
+  return (void *)addr;
+}
+
+void align_stack(struct user_regs_struct *regs, long preserve) {
+  /* INFO: ~0xf is a negative value, and REG_SP is unsigned,
+             so we must cast REG_SP to signed type before subtracting
+             then cast back to unsigned type.
+  */
+  regs  ssize_t l = process_vm_writev(pid, &local, 1, &remote, 1, 0);
+  if (l == -1) PLOGE("process_vm_writev");
+  else if ((size_t)l != len) LOGW("not fully written: %zu, excepted %zu", l, len);
+
+  return l;
+}
+
+ssize_t read_proc(int pid, uintptr_t remote_addr, void *buf, size_t len) {
+  struct iovec local = {
+    .iov_base = (void *)buf,
+    .iov_len = len
+  };
+
+  struct iovec remote = {
+    .iov_base = (void *)remote_addr,
+    .iov_len = len
+  };
+
+  ssize_t l = process_vm_readv(pid, &local, 1, &remote, 1, 0);
+  if (l == -1) PLOGE("process_vm_readv");
+  else if ((size_t)l != len) LOGW("not fully read: %zu, excepted %zu", l, len);
+
+  return l;
+}
+
+bool get_regs(int pid, struct user_regs_struct *regs) {
+  #if defined(__x86_64__) || defined(__i386__)
+    if (ptrace(PTRACE_GETREGS, pid, 0, regs) == -1) {
+      PLOGE("getregs");
+
+      return false;
+    }
+  #elif defined(__aarch64__) || defined(__arm__)
+    struct iovec iov = {
+      .iov_base = regs,
+      .iov_len = sizeof(struct user_regs_struct),
+    };
+
+    if (ptrace(PTRACE_GETREGSET, pid, NT_PRSTATUS, &iov) == -1) {
+      PLOGE("GETREGSET failed, trying GETREGS");
+
+      if (ptrace(/* PTRACE_GETREGS */ 12, pid, 0, regs) == -1) {
+        PLOGE("GETREGS");
+
+        return false;
+      }
+
+      return true;
+    }
+  #endif
+
+  return true;
+}
+
+bool set_regs(int pid, struct user_regs_struct *regs) {
+  #if defined(__x86_64__) || defined(__i386__)
+    if (ptrace(PTRACE_SETREGS, pid, 0, regs) == -1) {
+      PLOGE("setregs");
+
+      return false;
+    }
+  #elif defined(__aarch64__) || defined(__arm__)
+    struct iovec iov = {
+      .iov_base = regs,
+      .iov_len = sizeof(struct user_regs_struct),
+    };
+
+    if (ptrace(PTRACE_SETREGSET, pid, NT_PRSTATUS, &iov) == -1) {
+      PLOGE("SETREGSET failed, trying SETREGS");
+
+      if (ptrace(/* PTRACE_SETREGS */ 13, pid, 0, regs) == -1) {
+        PLOGE("SETREGS");
+
+        return false;
+      }
+
+      return true;
+    }
+  #endif
+
+  return true;
+}
+
 void get_addr_mem_region(struct maps_info *info, uintptr_t addr, char *buf, size_t buf_size) {
   for (size_t i = 0; i < info->length; i++) {
     const struct map_entry  *m = &info->maps[i];
