@@ -98,6 +98,197 @@ bool monitor_events_register_event(monitor_event_callback_t event_cb, int fd, ui
   return true;
 }
 
+void monitor_events_stop() {
+  monitor_events_running = false;
+}
+
+void monitor_events_loop() {
+  struct epoll_event events[2];
+  while (monitor_events_running) {
+    int nfds = epoll_wait(monitor_epoll_fd, events, 2, -1);
+    if (nfds == -1 && errno != EINTR) {
+      PLOGE("epoll_wait");
+
+      monitor_events_running = false;
+
+      break;
+    }
+
+    for (int i = 0; i < nfds; i++) {
+      if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+        LOGE("Failed event on fd %d: %s", ((struct epoll_event *)&events[i])->data.fd, strerror(errno));
+
+        monitor_events_running = false;
+
+        break;
+      }
+
+      ((monitor_event_callback_t)events[i].data.ptr)();
+
+      if (!monitor_events_running) break;
+    }
+  }
+
+  if (monitor_epoll_fd >= 0) close(monitor_epoll_fd);
+  monitor_epoll_fd = -1;
+}
+
+int monitor_sock_fd;
+
+bool rezygiskd_listener_init() {
+  monitor_sock_fd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (monitor_sock_fd == -1) {
+    PLOGE("socket create");
+
+    return false;
+  }
+
+  struct sockaddr_un addr = {
+    .sun_family = AF_UNIX,
+    .sun_path = { 0 }
+  };
+
+  size_t sun_path_len = sprintf(addr.sun_path, "%s/%s", rezygiskd_get_path(), SOCKET_NAME);
+
+  socklen_t socklen = sizeof(sa_family_t) + sun_path_len;
+  if (bind(monitor_sock_fd, (struct sockaddr *)&addr, socklen) == -1) {
+    PLOGE("bind socket");
+
+    return false;
+  }
+
+  return true;
+}
+
+void rezygiskd_listener_callback() {
+  while (1) {
+    uint8_t cmd;
+    ssize_t nread = TEMP_FAILURE_RETRY(read(monitor_sock_fd, &cmd, sizeof(cmd)));
+    if (nread == -1) {
+      if (errno == EINTR || errno == EWOULDBLOCK) break;
+
+      PLOGE("read socket");
+
+      continue;
+    }
+
+    switch (cmd) {
+      case START: {
+        if (tracing_state == STOPPING) {
+          LOGI("Continue tracing init");
+
+          tracing_state = TRACING;
+        } else if (tracing_state == STOPPED) {
+          LOGI("Start tracing init");
+
+          ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
+
+          tracing_state = TRACING;
+        }
+
+        update_status(NULL);
+
+        break;
+      }
+      case STOP: {
+        if (tracing_state == TRACING) {
+          LOGI("Stop tracing requested");
+
+          tracing_state = STOPPING;
+          monitor_stop_reason = "user requested";
+
+          ptrace(PTRACE_INTERRUPT, 1, 0, 0);
+          update_status(NULL);
+        }
+
+        break;
+      }
+      case EXIT: {
+        LOGI("Prepare for exit ...");
+
+        tracing_state = EXITING;
+        monitor_stop_reason = "user requested";
+
+        update_status(NULL);
+        monitor_events_stop();
+
+        break;
+      }
+      case ZYGOTE64_INJECTED:
+      case ZYGOTE32_INJECTED: {
+        LOGI("Received Zygote%s injected command", cmd == ZYGOTE64_INJECTED ? "64" : "32");
+
+        struct rezygiskd_status *status = cmd == ZYGOTE64_INJECTED ? &status64 : &status32;
+        status->zygote_injected = true;
+
+        update_status(NULL);
+
+        break;
+      }
+      case DAEMON64  TRACING,
+  STOPPING,
+  STOPPED,
+  EXITING
+};
+
+enum ptracer_tracing_state tracing_state = TRACING;
+
+struct rezygiskd_status {
+  bool supported;
+  bool zygote_injected;
+  bool daemon_running;
+  pid_t daemon_pid;
+  char *daemon_info;
+  char *daemon_error_info;
+};
+
+struct rezygiskd_status status64 = {
+  .supported = false,
+  .zygote_injected = false,
+  .daemon_running = false,
+  .daemon_pid = -1,
+  .daemon_info = NULL,
+  .daemon_error_info = NULL
+};
+struct rezygiskd_status status32 = {
+  .supported = false,
+  .zygote_injected = false,
+  .daemon_running = false,
+  .daemon_pid = -1,
+  .daemon_info = NULL,
+  .daemon_error_info = NULL
+};
+
+int monitor_epoll_fd;
+bool monitor_events_running = true;
+typedef void (*monitor_event_callback_t)();
+
+bool monitor_events_init() {
+  monitor_epoll_fd = epoll_create(1);
+  if (monitor_epoll_fd == -1) {
+    PLOGE("epoll_create");
+
+    return false;
+  }
+
+  return true;
+}
+
+bool monitor_events_register_event(monitor_event_callback_t event_cb, int fd, uint32_t events) {
+  struct epoll_event ev = {
+    .data.ptr = (void *)event_cb,
+    .events = events
+  };
+
+  if (epoll_ctl(monitor_epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+    PLOGE("epoll_ctl");
+
+    return false;
+  }
+
+  return true;
+}
+
 bool monitor_events_unregister_event(int fd) {
   if (epoll_ctl(monitor_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == -1) {
     PLOGE("epoll_ctl");
