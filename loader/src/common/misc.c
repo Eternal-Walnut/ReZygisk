@@ -144,6 +144,189 @@ struct maps_info *parse_maps_safe(const char *pid) {
     PLOGE("allocate memory");
 
     fclose(fp);
+
+    close(fd);
+    close(sockets[0]);
+
+    return NULL;
+  }
+
+  size_t infos_capacity = 2;
+  info_array->maps = malloc(infos_capacity * sizeof(struct map_entry));
+  if (!info_array->maps) {
+    PLOGE("allocate memory for maps");
+
+    free(info_array);
+
+    close(fd);
+    close(sockets[0]);
+
+    return NULL;
+  }
+  info_array->length = 0;
+
+  char line[1024];
+  while (fgets(line, sizeof(line), fp) != NULL) {
+    line[strlen(line) - 1] = '\0';
+
+    uintptr_t start, end, offset;
+    unsigned int dev_major, dev_minor;
+    ino_t inode;
+    char perms[5] = { 0 };
+    int path_off;
+
+    if (sscanf(line, "%" PRIxPTR "-%" PRIxPTR " %4s %" PRIxPTR " %x:%x %lu %n",
+               &start, &end, perms, &offset, &dev_major, &dev_minor, &inode, &path_off) != 7) {
+      continue;
+    }
+
+    uint8_t perms_bit = 0;
+    if (perms[0] == 'r') perms_bit |= PROT_READ;
+    if (perms[1] == 'w') perms_bit |= PROT_WRITE;
+    if (perms[2] == 'x') perms_bit |= PROT_EXEC;
+
+    while (isspace((unsigned char)line[path_off]))
+      path_off++;
+
+    char *path_str = strdup(line + path_off);
+    if (!path_str) {
+      PLOGE("allocate memory for map path");
+
+      goto cleanup_maps;
+    }
+
+    if (info_array->length >= infos_capacity) {
+      infos_capacity *= 2;
+      struct map_entry *tmp_maps = realloc(info_array->maps, infos_capacity * sizeof(struct map_entry));
+      if (!tmp_maps) {
+        PLOGE("reallocate (extend: %zu -> %zu) memory for maps", infos_capacity / 2, infos_capacity);
+
+        goto cleanup_maps_and_path;
+      }
+      info_array->maps = tmp_maps;
+    }
+
+    struct map_entry new_map = {
+      .start = start,
+      .end = end,
+      .perms = perms_bit,
+      .is_private = (perms[3] == 'p'),
+      .offset = offset,
+      .dev = makedev(dev_major, dev_minor),
+      .inode = inode,
+      .path = path_str
+    };
+
+    info_array->maps[info_array->length++] = new_m  if (uname(&uts) == -1) {
+    PLOGE("uname");
+
+    return (struct kernel_version) { 0 };
+  }
+
+  struct kernel_version version;
+  if (sscanf(uts.release, "%hhu.%u.%u", &version.major, &version.minor, &version.patch) != 3) {
+    LOGE("Failed to parse kernel version");
+
+    return (struct kernel_version) { 0 };
+  }
+
+  return version;
+}
+
+/* INFO: Opening /proc/.../maps leads to its access time being updated. This
+           function bypasses this by reading the maps from a forked process,
+           which is the same memory topology anyway. See more information in
+           parse_maps().
+*/
+struct maps_info *parse_maps_safe(const char *pid) {
+  int sockets[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) < 0) {
+    LOGE("Failed to create socket pair");
+
+    return NULL;
+  }
+
+  int ppid = clone(NULL, NULL, SIGCHLD, NULL);
+  if (ppid == -1) {
+    LOGE("Failed to clone process");
+
+    close(sockets[0]);
+    close(sockets[1]);
+
+    return NULL;
+  }
+
+  if (ppid == 0) {
+    close(sockets[0]);
+
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%s/maps", pid);
+
+    int maps_file = open(path, O_RDONLY | O_CLOEXEC);
+    if (maps_file < 0) {
+      LOGE("Failed to open %s", path);
+
+      uint8_t can_kill_myself = 0;
+      if (TEMP_FAILURE_RETRY(write(sockets[1], &can_kill_myself, sizeof(can_kill_myself))) < 0) {
+        LOGE("Failed to write to socket");
+      }
+
+      goto scan_children_fail;
+    }
+
+    if (write_fd(sockets[1], maps_file) < 0) {
+      LOGE("Failed to write file descriptor to socket");
+
+      goto post_open_scan_children_fail;
+    }
+
+    /* INFO: Wait for the parent process to finish reading */
+    uint8_t can_kill_myself = 1;
+    if (TEMP_FAILURE_RETRY(read(sockets[1], &can_kill_myself, sizeof(can_kill_myself))) < 0) {
+      LOGE("Failed to read from socket");
+
+      goto post_open_scan_children_fail;
+    }
+
+    close(maps_file);
+    close(sockets[1]);
+
+    _exit(EXIT_SUCCESS);
+
+    post_open_scan_children_fail:
+      close(maps_file);
+    scan_children_fail:
+      close(sockets[1]);
+
+      _exit(EXIT_FAILURE);
+  }
+
+  close(sockets[1]);
+
+  int fd = read_fd(sockets[0]);
+  if (fd < 0) {
+    LOGE("Failed to read file descriptor from socket");
+
+    close(sockets[0]);
+
+    return NULL;
+  }
+
+  FILE *fp = fdopen(fd, "r");
+  if (!fp) {
+    LOGE("Failed to open file descriptor as FILE");
+
+    close(fd);
+    close(sockets[0]);
+
+    return NULL;
+  }
+
+  struct maps_info *info_array = calloc(1, sizeof(struct maps_info));
+  if (!info_array) {
+    PLOGE("allocate memory");
+
+    fclose(fp);
     
     close(fd);
     close(sockets[0]);
