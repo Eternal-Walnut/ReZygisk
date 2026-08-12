@@ -59,6 +59,31 @@ __attribute__((no_stack_protector)) static jint nativeForkAndSpecialize_q_alt(JN
   rz_cleanup(&ctx);
   return ctx.pid;
 }
+__attribute__((no_stack_protector)) static jint nativeForkAndSpecialize_r(JNIEnv *env, jclass clazz, jint uid, jint gid, jintArray gids, jint runtime_flags, jobjectArray rlimits, jint mount_external, jstring se_info, jstring nice_name, jintArray fds_to_close, jintArray fds_to_ignore, jboolean is_child_zygote, jstring instruction_set, jstring app_data_dir, jboolean is_top_app, jobjectArray pkg_data_info_list, jo  struct zygisk_context ctx;
+  rz_init(&ctx, env, &args);
+  rz_nativeForkAndSpecialize_pre(&ctx);
+  ((nativeForkAndSpecialize_fn)nativeForkAndSpecialize_orig)(
+    env, clazz, uid, gid, gids, runtime_flags, rlimits, mount_external, se_info, nice_name, fds_to_close, fds_to_ignore, is_child_zygote, instruction_set, app_data_dir
+  );
+  rz_nativeForkAndSpecialize_post(&ctx);
+  rz_cleanup(&ctx);
+  return ctx.pid;
+}
+__attribute__((no_stack_protector)) static jint nativeForkAndSpecialize_q_alt(JNIEnv *env, jclass clazz, jint uid, jint gid, jintArray gids, jint runtime_flags, jobjectArray rlimits, jint mount_external, jstring se_info, jstring nice_name, jintArray fds_to_close, jintArray fds_to_ignore, jboolean is_child_zygote, jstring instruction_set, jstring app_data_dir, jboolean is_top_app) {
+  struct app_specialize_args_v5 args = { .uid = &uid, .gid = &gid, .gids = &gids, .runtime_flags = &runtime_flags, .rlimits = &rlimits, .mount_external = &mount_external, .se_info = &se_info, .nice_name = &nice_name, .instruction_set = &instruction_set, .app_data_dir = &app_data_dir };
+  args.fds_to_ignore = &fds_to_ignore;
+  args.is_child_zygote = &is_child_zygote;
+  args.is_top_app = &is_top_app;
+  struct zygisk_context ctx;
+  rz_init(&ctx, env, &args);
+  rz_nativeForkAndSpecialize_pre(&ctx);
+  ((nativeForkAndSpecialize_fn)nativeForkAndSpecialize_orig)(
+    env, clazz, uid, gid, gids, runtime_flags, rlimits, mount_external, se_info, nice_name, fds_to_close, fds_to_ignore, is_child_zygote, instruction_set, app_data_dir, is_top_app
+  );
+  rz_nativeForkAndSpecialize_post(&ctx);
+  rz_cleanup(&ctx);
+  return ctx.pid;
+}
 __attribute__((no_stack_protector)) static jint nativeForkAndSpecialize_r(JNIEnv *env, jclass clazz, jint uid, jint gid, jintArray gids, jint runtime_flags, jobjectArray rlimits, jint mount_external, jstring se_info, jstring nice_name, jintArray fds_to_close, jintArray fds_to_ignore, jboolean is_child_zygote, jstring instruction_set, jstring app_data_dir, jboolean is_top_app, jobjectArray pkg_data_info_list, jobjectArray whitelisted_data_info_list, jboolean mount_data_dirs, jboolean mount_storage_dirs) {
   struct app_specialize_args_v5 args = { .uid = &uid, .gid = &gid, .gids = &gids, .runtime_flags = &runtime_flags, .rlimits = &rlimits, .mount_external = &mount_external, .se_info = &se_info, .nice_name = &nice_name, .instruction_set = &instruction_set, .app_data_dir = &app_data_dir };
   args.fds_to_ignore = &fds_to_ignore;
