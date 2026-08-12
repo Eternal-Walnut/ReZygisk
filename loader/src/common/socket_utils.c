@@ -46,7 +46,6 @@ ssize_t read_loop_offset(int fd, void *buf, size_t count, off_t offset) {
     else ret = TEMP_FAILURE_RETRY(pread(fd, (char *)buf + read_bytes, count - read_bytes, offset + read_bytes));
     if (ret == -1) {
       if (errno == EAGAIN) {
-        LOGW("Got EAGAIN while writing to fd %d, retrying...\n", fd);
         LOGW("Got EAGAIN while reading from fd %d, retrying...\n", fd);
 
         /* INFO: Sleep for 1ms*/
@@ -142,7 +141,7 @@ int read_fd(int fd) {
 
   if (sendfd == -1) {
     LOGE("Failed to receive fd in read_fd: No valid fd found in control message");
-    
+
     return -1;
   }
 
