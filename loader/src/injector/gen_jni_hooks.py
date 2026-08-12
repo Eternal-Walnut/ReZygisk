@@ -161,133 +161,6 @@ permitted_capabilities = Argument('permitted_capabilities', jlong)
 effective_capabilities = Argument('effective_capabilities', jlong)
 
 # Method definitions
-fas_l = ForkAndSpec('l', [uid, gid, gids    def __init__(self, value, type):
-        self.value = value
-        self.type = type
-
-class Method:
-    def __init__(self, name, ret, args):
-        self.name = name
-        self.ret = ret
-        self.args = args
-
-    def cpp(self):
-        return ', '.join(x.cpp() for x in self.args)
-
-    def name_list(self):
-        return ', '.join(x.name for x in self.args)
-
-    def jni(self):
-        args = ''.join(x.type.jni for x in self.args)
-        return f'({args}){self.ret.type.jni}'
-
-    def body(self):
-        return ''
-
-class JNIHook(Method):
-    def __init__(self, ver, ret, args):
-        name = f'{self.base_name()}_{ver}'
-        super().__init__(name, ret, args)
-
-    def base_name(self):
-        return ''
-
-    def func_ptr_type(self):
-        # Generate function pointer typedef name
-        return f'{self.base_name()}_fn'
-
-    def orig_method(self):
-        return f'(({self.func_ptr_type()}){self.base_name()}_orig)'
-
-def ind(i):
-    return '\n' + '  ' * i
-
-# Common types
-jint = JType('jint', 'I')
-jintArray = JArray(jint)
-jstring = JType('jstring', 'Ljava/lang/String;')
-jboolean = JType('jboolean', 'Z')
-jlong = JType('jlong', 'J')
-jlongArray = JArray(jlong)
-void = JType('void', 'V')
-
-class ForkAndSpec(JNIHook):
-    def __init__(self, ver, args):
-        super().__init__(ver, Return('ctx.pid', jint), args)
-
-    def base_name(self):
-        return 'nativeForkAndSpecialize'
-
-    def init_args(self):
-        return 'struct app_specialize_args_v5 args = { .uid = &uid, .gid = &gid, .gids = &gids, .runtime_flags = &runtime_flags, .rlimits = &rlimits, .mount_external = &mount_external, .se_info = &se_info, .nice_name = &nice_name, .instruction_set = &instruction_set, .app_data_dir = &app_data_dir };'
-
-    def body(self):
-        decl = ''
-        decl += ind(1) + self.init_args()
-        for a in self.args:
-            if a.set_arg:
-                decl += ind(1) + f'args.{a.name} = &{a.name};'
-        decl += ind(1) + 'struct zygisk_context ctx;'
-        decl += ind(1) + 'rz_init(&ctx, env, &args);'
-        decl += ind(1) + f'rz_{self.base_name()}_pre(&ctx);'
-        decl += ind(1) + self.orig_method() + '('
-        decl += ind(2) + f'env, clazz, {self.name_list()}'
-        decl += ind(1) + ');'
-        decl += ind(1) + f'rz_{self.base_name()}_post(&ctx);'
-        decl += ind(1) + 'rz_cleanup(&ctx);'
-        return decl
-
-class SpecApp(ForkAndSpec):
-    def __init__(self, ver, args):
-        super().__init__(ver, args)
-        self.ret = Return('', void)
-
-    def base_name(self):
-        return 'nativeSpecializeAppProcess'
-
-class ForkServer(ForkAndSpec):
-    def base_name(self):
-        return 'nativeForkSystemServer'
-
-    def init_args(self):
-        return 'struct server_specialize_args_v1 args = { .uid = &uid, .gid = &gid, .gids = &gids, .runtime_flags = &runtime_flags, .permitted_capabilities = &permitted_capabilities, .effective_capabilities = &effective_capabilities };'
-
-# Common args
-uid = Argument('uid', jint)
-gid = Argument('gid', jint)
-gids = Argument('gids', jintArray)
-runtime_flags = Argument('runtime_flags', jint)
-rlimits = Argument('rlimits', JArray(jintArray))
-mount_external = Argument('mount_external', jint)
-se_info = Argument('se_info', jstring)
-nice_name = Argument('nice_name', jstring)
-fds_to_close = Argument('fds_to_close', jintArray)
-instruction_set = Argument('instruction_set', jstring)
-app_data_dir = Argument('app_data_dir', jstring)
-
-# o
-fds_to_ignore = Argument('fds_to_ignore', jintArray, True)
-
-# p
-is_child_zygote = Argument('is_child_zygote', jboolean, True)
-
-# q_alt
-is_top_app = Argument('is_top_app', jboolean, True)
-
-# r
-pkg_data_info_list = Argument('pkg_data_info_list', JArray(jstring), True)
-whitelisted_data_info_list = Argument('whitelisted_data_info_list', JArray(jstring), True)
-mount_data_dirs = Argument('mount_data_dirs', jboolean, True)
-mount_storage_dirs = Argument('mount_storage_dirs', jboolean, True)
-
-# u
-mount_sysprop_overrides = Argument('mount_sysprop_overrides', jboolean, True)
-
-# server
-permitted_capabilities = Argument('permitted_capabilities', jlong)
-effective_capabilities = Argument('effective_capabilities', jlong)
-
-# Method definitions
 fas_l = ForkAndSpec('l', [uid, gid, gids, runtime_flags, rlimits, mount_external,
     se_info, nice_name, fds_to_close, instruction_set, app_data_dir])
 
@@ -308,6 +181,12 @@ fas_u = ForkAndSpec('u', [uid, gid, gids, runtime_flags, rlimits, mount_external
     nice_name, fds_to_close, fds_to_ignore, is_child_zygote, instruction_set, app_data_dir, is_top_app,
     pkg_data_info_list, whitelisted_data_info_list, mount_data_dirs, mount_storage_dirs, mount_sysprop_overrides])
 
+# INFO: Android 17
+fas_c = ForkAndSpec('c', [uid, Anon(jint), gid, gids, runtime_flags, rlimits, mount_external,
+    se_info, nice_name, fds_to_close, fds_to_ignore, is_child_zygote, instruction_set, app_data_dir,
+    Anon(jboolean), is_top_app, pkg_data_info_list, whitelisted_data_info_list,
+    mount_data_dirs, mount_storage_dirs, mount_sysprop_overrides])
+
 fas_samsung_m = ForkAndSpec('samsung_m', [uid, gid, gids, runtime_flags, rlimits, mount_external,
     se_info, Anon(jint), Anon(jint), nice_name, fds_to_close, instruction_set, app_data_dir])
 
@@ -326,6 +205,12 @@ fas_samsung_b = ForkAndSpec('samsung_b', [uid, gid, gids, runtime_flags, rlimits
     Anon(jboolean), is_top_app, pkg_data_info_list, whitelisted_data_info_list,
     mount_data_dirs, mount_storage_dirs, mount_sysprop_overrides])
 
+# INFO: GrapheneOS Android 17
+fas_grapheneos_c = ForkAndSpec('grapheneos_c', [Anon(jlongArray), uid, gid, gids, runtime_flags,
+    rlimits, mount_external, se_info, nice_name, fds_to_close, fds_to_ignore, is_child_zygote,
+    instruction_set, app_data_dir, is_top_app, Anon(jboolean), pkg_data_info_list,
+    whitelisted_data_info_list, mount_data_dirs, mount_storage_dirs, mount_sysprop_overrides])
+
 spec_q = SpecApp('q', [uid, gid, gids, runtime_flags, rlimits, mount_external, se_info,
     nice_name, is_child_zygote, instruction_set, app_data_dir])
 
@@ -340,8 +225,20 @@ spec_u = SpecApp('u', [uid, gid, gids, runtime_flags, rlimits, mount_external, s
     is_child_zygote, instruction_set, app_data_dir, is_top_app, pkg_data_info_list,
     whitelisted_data_info_list, mount_data_dirs, mount_storage_dirs, mount_sysprop_overrides])
 
+# INFO: Android 17
+spec_c = SpecApp('c', [uid, Anon(jint), gid, gids, runtime_flags, rlimits, mount_external,
+    se_info, nice_name, is_child_zygote, instruction_set, app_data_dir,
+    is_top_app, pkg_data_info_list, whitelisted_data_info_list,
+    mount_data_dirs, mount_storage_dirs, mount_sysprop_overrides])
+
 spec_samsung_q = SpecApp('samsung_q', [uid, gid, gids, runtime_flags, rlimits, mount_external,
     se_info, Anon(jint), Anon(jint), nice_name, is_child_zygote, instruction_set, app_data_dir])
+
+# INFO: GrapheneOS Android 17
+spec_grapheneos_c = SpecApp('grapheneos_c', [Anon(jlongArray), uid, gid, gids, runtime_flags,
+    rlimits, mount_external, se_info, nice_name, is_child_zygote, instruction_set, app_data_dir,
+    is_top_app, pkg_data_info_list, whitelisted_data_info_list, mount_data_dirs,
+    mount_storage_dirs, mount_sysprop_overrides])
 
 server_l = ForkServer('l', [uid, gid, gids, runtime_flags, rlimits,
     permitted_capabilities, effective_capabilities])
@@ -401,10 +298,10 @@ with open('jni_hooks.h', 'w') as f:
 
     zygote = 'com/android/internal/os/Zygote'
 
-    methods = [fas_l, fas_o, fas_p, fas_q_alt, fas_r, fas_u, fas_samsung_m, fas_samsung_n, fas_samsung_o, fas_samsung_p, fas_samsung_b, fas_grapheneos_u]
+    methods = [fas_l, fas_o, fas_p, fas_q_alt, fas_r, fas_u, fas_c, fas_samsung_m, fas_samsung_n, fas_samsung_o, fas_samsung_p, fas_samsung_b, fas_grapheneos_u, fas_grapheneos_c]
     f.write(gen_jni_def(zygote, methods))
 
-    methods = [spec_q, spec_q_alt, spec_r, spec_u, spec_samsung_q, spec_grapheneos_u]
+    methods = [spec_q, spec_q_alt, spec_r, spec_u, spec_c, spec_samsung_q, spec_grapheneos_u, spec_grapheneos_c]
     f.write(gen_jni_def(zygote, methods))
 
     methods = [server_l, server_samsung_q]
@@ -413,7 +310,7 @@ with open('jni_hooks.h', 'w') as f:
     f.write("""
 static void do_hook_zygote(JNIEnv *env) {
   const char *clz = "com/android/internal/os/Zygote";
-  
+
   JNINativeMethod hooks[3];
   int hooks_count = 0;
 
